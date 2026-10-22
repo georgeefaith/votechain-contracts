@@ -10,6 +10,29 @@
 
 'use strict';
 
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+export type ProposalState =
+  | 'Active'
+  | 'Passed'
+  | 'Rejected'
+  | 'Executed'
+  | 'Cancelled';
+
+export interface RawProposal {
+  id: number;
+  title: string;
+  proposer: string;
+  votes_yes: number;
+  votes_no: number;
+  votes_abstain: number;
+  quorum: number;
+  start_time: number;
+  end_time: number;
+  state: ProposalState;
+  execute_after: number;
+}
+
 // ── Configuration ────────────────────────────────────────────────────────────
 
 const PAGE_SIZE = 10; // proposals per page
@@ -20,7 +43,7 @@ const PAGE_SIZE = 10; // proposals per page
 
 const now = Math.floor(Date.now() / 1000);
 
-const MOCK_PROPOSALS = [
+const MOCK_PROPOSALS: RawProposal[] = [
   {
     id: 1,
     title: 'Increase minimum proposal balance to 500,000 tokens',
@@ -181,47 +204,31 @@ const MOCK_PROPOSALS = [
 
 // ── State ────────────────────────────────────────────────────────────────────
 
-let currentPage   = 1;
-let activeFilter  = 'all';
-let searchQuery   = '';
-let countdownTimers = [];
+let currentPage = 1;
+let activeFilter = 'all';
+let searchQuery = '';
+let countdownTimers: ReturnType<typeof setInterval>[] = [];
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/**
- * Format a large number with locale-aware thousands separators.
- * @param {number} n
- * @returns {string}
- */
-function fmt(n) {
+/** Format a large number with locale-aware thousands separators. */
+function fmt(n: number): string {
   return n.toLocaleString();
 }
 
-/**
- * Truncate a Stellar address to first 6 + last 4 characters.
- * @param {string} addr
- * @returns {string}
- */
-function truncateAddress(addr) {
+/** Truncate a Stellar address to first 6 + last 4 characters. */
+function truncateAddress(addr: string): string {
   if (!addr || addr.length < 12) return addr;
-  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+  return `${addr.slice(0, 6)}\u2026${addr.slice(-4)}`;
 }
 
-/**
- * Return seconds remaining until a Unix timestamp.
- * @param {number} endTime  Unix timestamp (seconds)
- * @returns {number}
- */
-function secondsUntil(endTime) {
+/** Return seconds remaining until a Unix timestamp. */
+function secondsUntil(endTime: number): number {
   return Math.max(0, endTime - Math.floor(Date.now() / 1000));
 }
 
-/**
- * Format a duration in seconds as a human-readable string.
- * @param {number} secs
- * @returns {string}
- */
-function formatDuration(secs) {
+/** Format a duration in seconds as a human-readable string. */
+function formatDuration(secs: number): string {
   if (secs <= 0) return 'Ended';
   const d = Math.floor(secs / 86400);
   const h = Math.floor((secs % 86400) / 3600);
@@ -233,66 +240,70 @@ function formatDuration(secs) {
   return `${s}s remaining`;
 }
 
-/**
- * Return true if fewer than 1 hour remains (used to apply "ending soon" style).
- * @param {number} secs
- * @returns {boolean}
- */
-function isEndingSoon(secs) {
+/** Return true if fewer than 1 hour remains (used to apply "ending soon" style). */
+function isEndingSoon(secs: number): boolean {
   return secs > 0 && secs < 3600;
 }
 
-/**
- * Map a proposal state string to a CSS class suffix.
- * @param {string} state
- * @returns {string}
- */
-function badgeClass(state) {
+/** Map a proposal state string to a CSS class suffix. */
+function badgeClass(state: ProposalState): string {
   return `badge-${state.toLowerCase()}`;
 }
 
 // ── Filtering ────────────────────────────────────────────────────────────────
 
-function filteredProposals() {
-  return MOCK_PROPOSALS.filter(p => {
-    const matchesFilter = activeFilter === 'all' || p.state.toLowerCase() === activeFilter;
+function filteredProposals(): RawProposal[] {
+  return MOCK_PROPOSALS.filter((p) => {
+    const matchesFilter =
+      activeFilter === 'all' || p.state.toLowerCase() === activeFilter;
     const q = searchQuery.toLowerCase();
-    const matchesSearch = !q
-      || p.title.toLowerCase().includes(q)
-      || String(p.id).includes(q)
-      || p.proposer.toLowerCase().includes(q);
+    const matchesSearch =
+      !q ||
+      p.title.toLowerCase().includes(q) ||
+      String(p.id).includes(q) ||
+      p.proposer.toLowerCase().includes(q);
     return matchesFilter && matchesSearch;
   });
 }
 
 // ── Rendering ────────────────────────────────────────────────────────────────
 
-/**
- * Build the HTML for a single proposal card.
- * @param {object} p  Proposal object
- * @returns {string}  HTML string
- */
-function renderCard(p) {
+/** Escape HTML special characters to prevent XSS. */
+function escapeHtml(str: string): string {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/** Build the HTML for a single proposal card. */
+function renderCard(p: RawProposal): string {
   const total = p.votes_yes + p.votes_no + p.votes_abstain;
-  const yesP  = total > 0 ? (p.votes_yes     / total * 100).toFixed(1) : 0;
-  const noP   = total > 0 ? (p.votes_no      / total * 100).toFixed(1) : 0;
-  const absP  = total > 0 ? (p.votes_abstain / total * 100).toFixed(1) : 0;
+  const yesP = total > 0 ? ((p.votes_yes / total) * 100).toFixed(1) : '0';
+  const noP = total > 0 ? ((p.votes_no / total) * 100).toFixed(1) : '0';
+  const absP =
+    total > 0 ? ((p.votes_abstain / total) * 100).toFixed(1) : '0';
 
   const isActive = p.state === 'Active';
-  const secs     = isActive ? secondsUntil(p.end_time) : 0;
+  const secs = isActive ? secondsUntil(p.end_time) : 0;
   const endingSoon = isActive && isEndingSoon(secs);
 
-  const countdownHtml = isActive ? `
+  const countdownHtml = isActive
+    ? `
     <span class="countdown${endingSoon ? ' ending-soon' : ''}" data-end="${p.end_time}" aria-label="Time remaining: ${formatDuration(secs)}">
       <svg aria-hidden="true" focusable="false" width="14" height="14" viewBox="0 0 14 14" fill="none">
         <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.4"/>
         <path d="M7 4v3l2 1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
       </svg>
       <span class="countdown-text">${formatDuration(secs)}</span>
-    </span>` : '';
+    </span>`
+    : '';
 
   const quorumMet = total >= p.quorum;
-  const quorumPct = p.quorum > 0 ? Math.min(100, (total / p.quorum * 100)).toFixed(0) : 0;
+  const quorumPct =
+    p.quorum > 0 ? Math.min(100, (total / p.quorum) * 100).toFixed(0) : '0';
 
   return `
     <li class="proposal-card" role="article" aria-label="Proposal ${p.id}: ${p.title}">
@@ -334,34 +345,20 @@ function renderCard(p) {
           <span class="proposer-address" title="${escapeHtml(p.proposer)}">${truncateAddress(p.proposer)}</span>
         </span>
         <span class="quorum-info" aria-label="Quorum ${quorumPct}% of ${fmt(p.quorum)} required${quorumMet ? ', met' : ', not yet met'}">
-          Quorum ${quorumPct}%${quorumMet ? ' ✓' : ''}
+          Quorum ${quorumPct}%${quorumMet ? ' \u2713' : ''}
         </span>
         ${countdownHtml}
       </div>
     </li>`;
 }
 
-/**
- * Escape HTML special characters to prevent XSS.
- * @param {string} str
- * @returns {string}
- */
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
 // ── Countdown tick ────────────────────────────────────────────────────────────
 
-function tickCountdowns() {
-  document.querySelectorAll('.countdown[data-end]').forEach(el => {
-    const endTime = parseInt(el.dataset.end, 10);
-    const secs    = secondsUntil(endTime);
-    const text    = el.querySelector('.countdown-text');
+function tickCountdowns(): void {
+  document.querySelectorAll<HTMLElement>('.countdown[data-end]').forEach((el) => {
+    const endTime = parseInt(el.dataset['end'] ?? '0', 10);
+    const secs = secondsUntil(endTime);
+    const text = el.querySelector('.countdown-text');
     if (text) text.textContent = formatDuration(secs);
     el.setAttribute('aria-label', `Time remaining: ${formatDuration(secs)}`);
     if (isEndingSoon(secs)) {
@@ -374,44 +371,45 @@ function tickCountdowns() {
 
 // ── Render page ───────────────────────────────────────────────────────────────
 
-function render() {
+function render(): void {
   // Clear existing countdown intervals
   countdownTimers.forEach(clearInterval);
   countdownTimers = [];
 
-  const list      = document.getElementById('proposal-list');
+  const list = document.getElementById('proposal-list');
   const emptyState = document.getElementById('empty-state');
-  const prevBtn   = document.getElementById('prev-btn');
-  const nextBtn   = document.getElementById('next-btn');
-  const pageInfo  = document.getElementById('page-info');
+  const prevBtn = document.getElementById('prev-btn') as HTMLButtonElement | null;
+  const nextBtn = document.getElementById('next-btn') as HTMLButtonElement | null;
+  const pageInfo = document.getElementById('page-info');
   const liveRegion = document.getElementById('live-region');
 
-  const filtered   = filteredProposals();
+  const filtered = filteredProposals();
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
 
   // Clamp current page
   if (currentPage > totalPages) currentPage = totalPages;
 
   const start = (currentPage - 1) * PAGE_SIZE;
-  const page  = filtered.slice(start, start + PAGE_SIZE);
+  const page = filtered.slice(start, start + PAGE_SIZE);
 
   if (page.length === 0) {
-    list.innerHTML = '';
-    emptyState.hidden = false;
-    liveRegion.textContent = 'No proposals match your filter.';
+    if (list) list.innerHTML = '';
+    if (emptyState) emptyState.hidden = false;
+    if (liveRegion) liveRegion.textContent = 'No proposals match your filter.';
   } else {
-    emptyState.hidden = true;
-    list.innerHTML = page.map(renderCard).join('');
-    liveRegion.textContent = `Showing ${page.length} proposal${page.length !== 1 ? 's' : ''}.`;
+    if (emptyState) emptyState.hidden = true;
+    if (list) list.innerHTML = page.map(renderCard).join('');
+    if (liveRegion)
+      liveRegion.textContent = `Showing ${page.length} proposal${page.length !== 1 ? 's' : ''}.`;
   }
 
   // Pagination controls
-  pageInfo.textContent = `Page ${currentPage} of ${totalPages}`;
-  prevBtn.disabled = currentPage <= 1;
-  nextBtn.disabled = currentPage >= totalPages;
+  if (pageInfo) pageInfo.textContent = `Page ${currentPage} of ${totalPages}`;
+  if (prevBtn) prevBtn.disabled = currentPage <= 1;
+  if (nextBtn) nextBtn.disabled = currentPage >= totalPages;
 
   // Start countdown ticker for active proposals
-  if (page.some(p => p.state === 'Active')) {
+  if (page.some((p) => p.state === 'Active')) {
     const timer = setInterval(tickCountdowns, 1000);
     countdownTimers.push(timer);
   }
@@ -421,13 +419,13 @@ function render() {
 
 document.addEventListener('DOMContentLoaded', () => {
   // Filter buttons
-  document.querySelectorAll('.filter-btn').forEach(btn => {
+  document.querySelectorAll<HTMLButtonElement>('.filter-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
-      activeFilter = btn.dataset.filter;
-      currentPage  = 1;
+      activeFilter = btn.dataset['filter'] ?? 'all';
+      currentPage = 1;
 
       // Update aria-pressed on all buttons
-      document.querySelectorAll('.filter-btn').forEach(b => {
+      document.querySelectorAll<HTMLButtonElement>('.filter-btn').forEach((b) => {
         const isActive = b === btn;
         b.classList.toggle('active', isActive);
         b.setAttribute('aria-pressed', String(isActive));
@@ -438,31 +436,43 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Search input — debounced
-  let searchTimer;
-  document.getElementById('search-input').addEventListener('input', e => {
+  let searchTimer: ReturnType<typeof setTimeout>;
+  const searchInput = document.getElementById('search-input') as HTMLInputElement | null;
+  searchInput?.addEventListener('input', (e) => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
-      searchQuery = e.target.value.trim();
+      searchQuery = (e.target as HTMLInputElement).value.trim();
       currentPage = 1;
       render();
     }, 250);
   });
 
   // Pagination
-  document.getElementById('prev-btn').addEventListener('click', () => {
-    if (currentPage > 1) { currentPage--; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+  document.getElementById('prev-btn')?.addEventListener('click', () => {
+    if (currentPage > 1) {
+      currentPage--;
+      render();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
   });
-  document.getElementById('next-btn').addEventListener('click', () => {
+  document.getElementById('next-btn')?.addEventListener('click', () => {
     const total = Math.ceil(filteredProposals().length / PAGE_SIZE);
-    if (currentPage < total) { currentPage++; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+    if (currentPage < total) {
+      currentPage++;
+      render();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
   });
 
   // ── Theme toggle logic ───────────────────────────────────────────────────────
-  const themeToggle = document.getElementById('theme-toggle');
-  
-  function updateThemeToggleUI(isDark) {
+  const themeToggle = document.getElementById('theme-toggle') as HTMLButtonElement | null;
+
+  function updateThemeToggleUI(isDark: boolean): void {
     if (!themeToggle) return;
-    themeToggle.setAttribute('aria-label', isDark ? 'Switch to light mode' : 'Switch to dark mode');
+    themeToggle.setAttribute(
+      'aria-label',
+      isDark ? 'Switch to light mode' : 'Switch to dark mode',
+    );
     themeToggle.title = isDark ? 'Switch to light mode' : 'Switch to dark mode';
     themeToggle.innerHTML = isDark
       ? `<svg class="theme-toggle-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
